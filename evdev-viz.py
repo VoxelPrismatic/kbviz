@@ -1,4 +1,5 @@
 from typing import List
+import sys
 import evdev
 from evdev import ecodes as C
 import os
@@ -223,10 +224,11 @@ def print_history():
         if ln > w:
             ln = len(re.sub("\x1b\\[(\\d+|\\d+;\\d+)m", "", st))
             history = ls
-            return print("\x1b[H\x1b[2J" + (" " * (w - ln)) + st.strip())
+            print("\x1b[H\x1b[2J" + (" " * (w - ln)) + st.strip(), end="\r")
+            return
         st = new_st
         ls.append(k)
-    print("\x1b[H\x1b[2J" + (" " * (w - ln)) + st.strip())
+    print("\x1b[H\x1b[2J" + (" " * (w - ln)) + st.strip(), end="\r")
 
 
 def listen(keyboard: evdev.InputDevice):
