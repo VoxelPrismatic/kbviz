@@ -63,8 +63,8 @@ scancodes = {
     C.KEY_COMMA: ",",
     C.KEY_DOT: ".",
     C.KEY_SLASH: "/",
-    C.KEY_RIGHT: "←",
-    C.KEY_LEFT: "→",
+    C.KEY_LEFT: "←",
+    C.KEY_RIGHT: "→",
     C.KEY_UP: "↑",
     C.KEY_DOWN: "↓",
     C.KEY_SPACE: "⋯",
@@ -186,7 +186,7 @@ def decode_event(kb, evt: evdev.events.InputEvent):
                 if st in shifts:
                     st = shifts[st]
                 else:
-                    st = st.replace("94", "91")
+                    st = mod_SHIFT.replace("94", "91") + st
             case "KEY_LEFTCTRL" | "KEY_RIGHTCTRL":
                 st = mod_CTRL.replace("94", "91") + st
                 skip_ctrl = True
