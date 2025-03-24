@@ -10,6 +10,13 @@ Keyboard visualizer
 Preview:
 
 
-https://github.com/user-attachments/assets/01c0d917-5385-48eb-a2e1-d0ed2d3d6f2d
+
+https://github.com/user-attachments/assets/91ec164b-a3f4-453e-bf89-e5e72cd3d2c9
+
+> \**apologies for the recording bugs, spectacle isn't perfect*
+
+> [!NOTE]
+> If you're using KDE Konsole, you need at least two lines, otherwise it won't display anything.
+> This does not appear to be an issue with other emulators, like Ghostty.
 
 Neovim plugin: [Rabbit.nvim](https://github.com/voxelprismatic/rabbit.nvim)
