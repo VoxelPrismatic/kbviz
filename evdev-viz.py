@@ -152,7 +152,7 @@ def decode_event(kb, evt: evdev.events.InputEvent):
         st = scancodes[cat.scancode]
         if st[0] == "\x1b":
             pass
-        if len(st) > 1 and ord(st[0]) < 255:
+        elif len(st) > 1 and ord(st[0]) < 255:
             st = "\x1b[94;1m<" + st + ">\x1b[0m"
         elif ord(st[0]) > 255:
             st = "\x1b[94;1m" + st + "\x1b[0m"
