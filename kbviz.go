@@ -13,10 +13,16 @@ import (
 	"golang.org/x/term"
 
 	"github.com/holoplot/go-evdev"
+	"github.com/mappu/miqt/qt6"
 )
 
 func escalate() {
-	cmd := exec.Command("pkexec", os.Args[0])
+	var cmd *exec.Cmd
+	if term.IsTerminal(0) {
+		cmd = exec.Command("sudo", os.Args...)
+	} else {
+		cmd = exec.Command("pkexec", os.Args...)
+	}
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -32,6 +38,14 @@ var (
 	historyMu sync.Mutex
 )
 
+var (
+	sakuraIris = "#696ac2"
+	sakuraTree = "#33b473"
+	sakuraRose = "#d875a7"
+	sakuraGold = "#b4b433"
+	sakuraLove = "#d87576"
+)
+
 func main() {
 	if syscall.Geteuid() != 0 {
 		escalate()
@@ -40,12 +54,60 @@ func main() {
 
 	devs := grabKeyboards()
 
+	doGUI := !term.IsTerminal(0)
+	color := regexp.MustCompile("^--(\\w+)=\"(#[a-fA-F0-9]{6})\"$")
+	for _, arg := range os.Args {
+		if arg == "--gui" {
+			doGUI = true
+			continue
+		} else if arg == "--no-gui" {
+			doGUI = false
+			continue
+		}
+
+		for _, group := range color.FindAllStringSubmatch(arg, -1) {
+			if len(group) != 2 {
+				panic("Invalid color arg: " + arg)
+			}
+
+			name, hex := group[0], group[1]
+
+			switch name {
+			case "iris", "blue":
+				sakuraIris = hex
+			case "tree", "green":
+				sakuraTree = hex
+			case "rose", "pink":
+				sakuraRose = hex
+			case "gold", "yellow":
+				sakuraGold = hex
+			case "love", "red":
+				sakuraRose = hex
+			}
+		}
+	}
+
 	done := make(chan bool)
 	for _, dev := range devs {
 		go listen(done, dev)
 	}
 
+	if doGUI {
+		makeGUI()
+	}
+
 	<-done
+}
+
+func makeGUI() {
+	fmt.Println("gui")
+	qt6.NewQApplication(os.Args)
+	defer qt6.QApplication_Exec()
+
+	win := qt6.NewQMainWindow(nil)
+	win.SetWindowTitle("KbViz")
+	win.SetMinimumSize2(400, 40)
+	win.Show()
 }
 
 func grabKeyboards() []*evdev.InputDevice {
@@ -66,7 +128,6 @@ func grabKeyboards() []*evdev.InputDevice {
 		full := fmt.Sprintf("%s/%s", basePath, fileName.Name())
 		dev, err := evdev.OpenWithFlags(full, os.O_RDONLY)
 		if err != nil {
-			fmt.Printf("\x1b[91;1m%s\x1b[0m: %s\n", full, err.Error())
 			continue
 		}
 
@@ -195,6 +256,56 @@ func (key Key) String(withCount bool) string {
 	return sub
 }
 
+func (key Key) HTMLString() string {
+	sub := key.Char
+	r, sz := utf8.DecodeRuneInString(sub + ".")
+	if !key.Found {
+		sub = fmt.Sprintf("<font color='%s'>&lt;%d: <b>%s</b>&gt;</font>", sakuraTree, key.Code, key.Name)
+	} else if utf8.RuneCountInString(key.Char) > 1 && r < 255 {
+		sub = fmt.Sprintf("<font color='%s'>&lt;<b>%s</b>&gt</font>", sakuraIris, sub)
+	} else if r == leftCharRune {
+		sub = fmt.Sprintf("<font color='%s'>%s</font>", sakuraGold, leftChar) +
+			fmt.Sprintf("<font color='%s'><b>%s</b></font>", sakuraIris, sub[sz:])
+	} else if r > 255 {
+		r, sz = utf8.DecodeLastRuneInString(sub)
+		if r == rightCharRune {
+			sub = fmt.Sprintf("<font color='%s'><b>%s</b></font>", sakuraIris, sub[:len(sub)-sz]) +
+				fmt.Sprintf("<font color='%s'>%s</font>", sakuraGold, rightChar)
+		} else {
+			sub = fmt.Sprintf("<font color='%s'><b>%s</b></font>", sakuraIris, sub)
+		}
+	} else {
+		sub = strings.ToLower(sub)
+	}
+
+	modHtml := ModSet[string]{
+		Shift: fmt.Sprintf("<font color='%s'><b>%s</b></font>", sakuraLove, modChar.Shift),
+		Ctrl:  fmt.Sprintf("<font color='%s'><b>%s</b></font>", sakuraLove, modChar.Ctrl),
+		Alt:   fmt.Sprintf("<font color='%s'><b>%s</b></font>", sakuraLove, modChar.Alt),
+		Meta:  fmt.Sprintf("<font color='%s'><b>%s</b></font>", sakuraLove, modChar.Meta),
+	}
+	if key.Held.Shift {
+		shift, exist := shifts[sub]
+		if exist {
+			sub = shift
+		} else {
+			sub = modHtml.Shift + sub
+		}
+	}
+	if key.Held.Alt {
+		sub = modHtml.Alt + sub
+	}
+	if key.Held.Ctrl {
+		sub = modHtml.Ctrl + sub
+	}
+	if key.Held.Meta {
+		sub = modHtml.Meta + sub
+	}
+	sub = fmt.Sprintf("%s<i><font color='%s'>×%d</font></i>", sub, sakuraRose, key.Count)
+
+	return sub
+}
+
 func makeKey(skip *ModSet[bool], dev *evdev.InputDevice, evt *evdev.InputEvent) *Key {
 	key := Key{
 		Code:  evt.Code,
@@ -278,8 +389,8 @@ func PrintHistory() {
 		l = new_l
 	}
 
-	if i > 0 {
-		history = history[i:]
+	if len(history) > 10*w {
+		history = history[10*w:]
 	}
 
 	st = strings.Repeat(" ", max(0, w-l)) + st
