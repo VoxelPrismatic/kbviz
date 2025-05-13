@@ -4,10 +4,13 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
 	"unicode/utf8"
+
+	"golang.org/x/term"
 
 	"github.com/holoplot/go-evdev"
 )
@@ -127,7 +130,7 @@ func goHandle(dev *evdev.InputDevice, evt *evdev.InputEvent, skip *ModSet[bool])
 			history = append(history, *key)
 		}
 		historyMu.Unlock()
-		fmt.Println(key.String(true))
+		PrintHistory()
 	}
 }
 
@@ -150,13 +153,20 @@ func (this Key) Equals(other Key) bool {
 
 func (key Key) String(withCount bool) string {
 	sub := key.Char
-	r, _ := utf8.DecodeRuneInString(sub + ".")
+	r, sz := utf8.DecodeRuneInString(sub + ".")
 	if !key.Found {
 		sub = fmt.Sprintf("\x1b[92;1m<%d: %s>\x1b[0m", key.Code, key.Name)
 	} else if utf8.RuneCountInString(key.Char) > 1 && r < 255 {
 		sub = fmt.Sprintf("\x1b[94;1m<%s>\x1b[0m", sub)
+	} else if r == leftCharRune {
+		sub = fmt.Sprintf("\x1b[93;1m%s\x1b[94;1m%s\x1b[0m", leftChar, sub[sz:])
 	} else if r > 255 {
-		sub = fmt.Sprintf("\x1b[94;1m%s\x1b[0m", sub)
+		r, sz = utf8.DecodeLastRuneInString(sub)
+		if r == rightCharRune {
+			sub = fmt.Sprintf("\x1b[94;1m%s\x1b[93;1m%s\x1b[0m", sub[:len(sub)-sz], rightChar)
+		} else {
+			sub = fmt.Sprintf("\x1b[94;1m%s\x1b[0m", sub)
+		}
 	} else {
 		sub = strings.ToLower(sub)
 	}
@@ -196,10 +206,14 @@ func makeKey(skip *ModSet[bool], dev *evdev.InputDevice, evt *evdev.InputEvent) 
 	key.Char, key.Found = chars[evt.Code]
 
 	jump := map[string]*bool{
-		modChar.Shift: &skip.Shift,
-		modChar.Ctrl:  &skip.Ctrl,
-		modChar.Alt:   &skip.Alt,
-		modChar.Meta:  &skip.Meta,
+		chars[evdev.KEY_LEFTSHIFT]:  &skip.Shift,
+		chars[evdev.KEY_RIGHTSHIFT]: &skip.Shift,
+		chars[evdev.KEY_LEFTCTRL]:   &skip.Ctrl,
+		chars[evdev.KEY_RIGHTCTRL]:  &skip.Ctrl,
+		chars[evdev.KEY_LEFTALT]:    &skip.Alt,
+		chars[evdev.KEY_RIGHTALT]:   &skip.Alt,
+		chars[evdev.KEY_LEFTMETA]:   &skip.Meta,
+		chars[evdev.KEY_RIGHTMETA]:  &skip.Meta,
 	}
 
 	ptr, isMod := jump[key.Char]
@@ -236,6 +250,45 @@ func modState(dev *evdev.InputDevice) ModSet[bool] {
 	}
 }
 
+func PrintHistory() {
+	if !term.IsTerminal(0) {
+		// not a tty
+		return
+	}
+
+	w, _, err := term.GetSize(0)
+	if err != nil {
+		return
+	}
+
+	var i int
+	st := ""
+	l := 0
+	for i = len(history) - 1; i >= 0; i-- {
+		key := history[i]
+		if key.Char == "" {
+			continue
+		}
+		new_st := key.String(true) + " " + st
+		new_l := utf8.RuneCountInString(ansi.ReplaceAllString(new_st, ""))
+		if new_l >= w {
+			break
+		}
+		st = new_st
+		l = new_l
+	}
+
+	if i > 0 {
+		history = history[i:]
+	}
+
+	st = strings.Repeat(" ", max(0, w-l)) + st
+
+	fmt.Printf("\x1b[H\x1b[2J%s\r", st)
+}
+
+var ansi = regexp.MustCompile("\x1b\\[\\d+(;\\d+)?m")
+
 var shifts = map[string]string{
 	"a": "A", "b": "B", "c": "C", "d": "D", "e": "E", "f": "F",
 	"g": "G", "h": "H", "i": "I", "j": "J", "k": "K", "l": "L",
@@ -268,13 +321,20 @@ var modLove = ModSet[string]{
 	Meta:  "\x1b[91;1m" + modChar.Meta + "\x1b[0m",
 }
 
+var (
+	rightChar        = ""
+	leftChar         = ""
+	leftCharRune, _  = utf8.DecodeRuneInString(leftChar)
+	rightCharRune, _ = utf8.DecodeRuneInString(rightChar)
+)
+
 var chars = map[evdev.EvCode]string{
 	evdev.KEY_RESERVED:   "",
 	evdev.BTN_RIGHT:      "",
 	evdev.BTN_LEFT:       "",
 	evdev.BTN_MIDDLE:     "",
-	evdev.BTN_EXTRA:      "1",
-	evdev.BTN_SIDE:       "2",
+	evdev.BTN_EXTRA:      "¹",
+	evdev.BTN_SIDE:       "²",
 	evdev.KEY_ESC:        "󱥨",
 	evdev.KEY_1:          "1",
 	evdev.KEY_2:          "2",
@@ -349,12 +409,24 @@ var chars = map[evdev.EvCode]string{
 	evdev.KEY_F10:        "󰊕10",
 	evdev.KEY_F11:        "󰊕11",
 	evdev.KEY_F12:        "󰊕12",
-	evdev.KEY_LEFTMETA:   modChar.Meta,
-	evdev.KEY_RIGHTMETA:  modChar.Meta,
-	evdev.KEY_LEFTCTRL:   modChar.Ctrl,
-	evdev.KEY_RIGHTCTRL:  modChar.Ctrl,
-	evdev.KEY_LEFTSHIFT:  modChar.Shift,
-	evdev.KEY_RIGHTSHIFT: modChar.Shift,
-	evdev.KEY_LEFTALT:    modChar.Alt,
-	evdev.KEY_RIGHTALT:   modChar.Alt,
+	evdev.KEY_F13:        "󰊕13",
+	evdev.KEY_F14:        "󰊕14",
+	evdev.KEY_F15:        "󰊕15",
+	evdev.KEY_F16:        "󰊕16",
+	evdev.KEY_F17:        "󰊕17",
+	evdev.KEY_F18:        "󰊕18",
+	evdev.KEY_F19:        "󰊕19",
+	evdev.KEY_F20:        "󰊕20",
+	evdev.KEY_F21:        "󰊕21",
+	evdev.KEY_F22:        "󰊕22",
+	evdev.KEY_F23:        "󰊕23",
+	evdev.KEY_F24:        "󰊕24",
+	evdev.KEY_LEFTMETA:   leftChar + modChar.Meta,
+	evdev.KEY_RIGHTMETA:  modChar.Meta + rightChar,
+	evdev.KEY_LEFTCTRL:   leftChar + modChar.Ctrl,
+	evdev.KEY_RIGHTCTRL:  modChar.Ctrl + rightChar,
+	evdev.KEY_LEFTSHIFT:  leftChar + modChar.Shift,
+	evdev.KEY_RIGHTSHIFT: modChar.Shift + rightChar,
+	evdev.KEY_LEFTALT:    leftChar + modChar.Alt,
+	evdev.KEY_RIGHTALT:   modChar.Alt + rightChar,
 }
