@@ -1,16 +1,15 @@
 from typing import List
-import sys
 import evdev
 from evdev import ecodes as C
 import os
 import re
 import threading
 
-history = []
+history: list[str] = []
 
-scancodes = {
-    # Scancode: ASCII Code
-    C.KEY_RESERVED: None,
+scancodes: dict[int, str] = {
+    # Scan code: ASCII Code
+    C.KEY_RESERVED: "",
     C.KEY_ESC: "󱥨",
     C.KEY_1: "1",
     C.KEY_2: "2",
@@ -96,11 +95,14 @@ scancodes = {
 }
 
 shifts = {
-    "a": "A", "b": "B", "c": "C", "d": "D", "e": "E", "f": "F", "g": "G", "h": "H", "i": "I", "j": "J",
-    "k": "K", "l": "L", "m": "M", "n": "N", "o": "O", "p": "P", "q": "Q", "r": "R", "s": "S", "t": "T",
-    "u": "U", "v": "V", "w": "W", "x": "X", "y": "Y", "z": "Z", "`": "~", "1": "!", "2": "@", "3": "#",
-    "4": "$", "5": "%", "6": "^", "7": "&", "8": "*", "9": "(", "0": ")", "-": "_", "=": "+", "[": "{",
-    "]": "}", "\\": "|", ";": ":", "'": '"', ",": "<", ".": ">", "/": "?"
+    "a": "A", "b": "B", "c": "C", "d": "D", "e": "E", "f": "F",
+    "g": "G", "h": "H", "i": "I", "j": "J", "k": "K", "l": "L",
+    "m": "M", "n": "N", "o": "O", "p": "P", "q": "Q", "r": "R",
+    "s": "S", "t": "T", "u": "U", "v": "V", "w": "W", "x": "X",
+    "y": "Y", "z": "Z", "`": "~", "1": "!", "2": "@", "3": "#",
+    "4": "$", "5": "%", "6": "^", "7": "&", "8": "*", "9": "(",
+    "0": ")", "-": "_", "=": "+", "[": "{", "]": "}", "\\": "|",
+    ";": ":", "'": '"', ",": "<", ".": ">", "/": "?"
 }
 
 
@@ -150,7 +152,9 @@ def decode_event(kb, evt: evdev.events.InputEvent):
     st = ""
     if cat.scancode in scancodes:
         st = scancodes[cat.scancode]
-        if st[0] == "\x1b":
+        if st == "":
+            return
+        elif st[0] == "\x1b":
             pass
         elif len(st) > 1 and ord(st[0]) < 255:
             st = "\x1b[94;1m<" + st + ">\x1b[0m"
