@@ -21,7 +21,22 @@ func escalate() {
 	if term.IsTerminal(0) {
 		cmd = exec.Command("sudo", os.Args...)
 	} else {
-		cmd = exec.Command("pkexec", os.Args...)
+
+		file, err := filepath.Abs(os.Args[0])
+		if err != nil {
+			panic(err)
+		}
+		os.Args[0] = file
+
+		args := []string{"env"}
+		for _, key := range os.Environ() {
+			if !strings.Contains(key, " ") {
+				args = append(args, key)
+			}
+		}
+
+		args = append(args, os.Args...)
+		cmd = exec.Command("pkexec", args...)
 	}
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
