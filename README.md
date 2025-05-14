@@ -27,6 +27,9 @@ Keyboard visualizer
 
 Preview:
 
+![image](https://github.com/user-attachments/assets/dc4e2034-3a91-4514-85e4-1601b760d7bb)
+
+
 ## Python version
 
 1. Must be run as root
