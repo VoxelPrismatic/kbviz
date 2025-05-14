@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"os/exec"
@@ -74,6 +75,46 @@ var ignoreEvt = map[evdev.EvCode]bool{
 	evdev.BTN_TOOL_DOUBLETAP: true,
 	evdev.BTN_TOOL_TRIPLETAP: true,
 }
+
+func evcode(val string) (evdev.EvCode, error) {
+	val = strings.ToUpper(val)
+	val = strings.ReplaceAll(val, "-", "_")
+	val = strings.ReplaceAll(val, " ", "_")
+
+	try, err := strconv.Atoi(val)
+	if err == nil {
+		return evdev.EvCode(try), nil
+	}
+
+	code, ok := evdev.KEYFromString[val]
+	if !ok {
+		return 0, fmt.Errorf("key '%s' doesn't exist", val)
+	}
+
+	return code, nil
+}
+
+func applyColor(ptr *string) func(val string) error {
+	color := regexp.MustCompile("^#[a-fA-F0-9]{6}$")
+	return func(val string) error {
+		if !color.MatchString(val) {
+			return fmt.Errorf("invalid color code")
+		}
+		*ptr = val
+		return nil
+	}
+}
+
+func applyListener(set bool) func(val string) error {
+	return func(val string) error {
+		code, err := evcode(val)
+		if err == nil {
+			ignoreEvt[code] = set
+		}
+		return err
+	}
+}
+
 func main() {
 	if syscall.Geteuid() != 0 {
 		escalate()
@@ -82,37 +123,33 @@ func main() {
 
 	devs := grabKeyboards()
 
+	_flagGui := flag.Bool("gui", false, "Enable GUI")
+	_flagFontFamily = flag.String("font", "", "Set the font family")
+	flag.Func("iris", "Set the color 'iris'", applyColor(&sakuraIris))
+	flag.Func("tree", "Set the color 'tree'", applyColor(&sakuraTree))
+	flag.Func("rose", "Set the color 'rose'", applyColor(&sakuraRose))
+	flag.Func("gold", "Set the color 'gold'", applyColor(&sakuraGold))
+	flag.Func("love", "Set the color 'rose'", applyColor(&sakuraLove))
+	flag.Func("X", "Do not listen to this event", applyListener(true))
+	flag.Func("L", "Listen to this event", applyListener(false))
+	flag.Func("S", "Set a symbol in the format of <key>=<char> eg KEY_NUM_8=8", func(val string) error {
+		parts := strings.SplitN(val, "=", 2)
+		if len(parts) != 2 {
+			return fmt.Errorf("not in proper format (eg KEY_NUM_8=8)")
+		}
+
+		code, err := evcode(parts[0])
+		if err == nil {
+			chars[code] = parts[1]
+		}
+		return err
+	})
+
+	flag.Parse()
+
 	doGUI := !term.IsTerminal(0)
-	color := regexp.MustCompile("^--(\\w+)=\"(#[a-fA-F0-9]{6})\"$")
-	for _, arg := range os.Args {
-		if arg == "--gui" {
-			doGUI = true
-			continue
-		} else if arg == "--no-gui" {
-			doGUI = false
-			continue
-		}
-
-		for _, group := range color.FindAllStringSubmatch(arg, -1) {
-			if len(group) != 2 {
-				panic("Invalid color arg: " + arg)
-			}
-
-			name, hex := group[0], group[1]
-
-			switch name {
-			case "iris", "blue":
-				sakuraIris = hex
-			case "tree", "green":
-				sakuraTree = hex
-			case "rose", "pink":
-				sakuraRose = hex
-			case "gold", "yellow":
-				sakuraGold = hex
-			case "love", "red":
-				sakuraRose = hex
-			}
-		}
+	if _flagGui != nil {
+		doGUI = *_flagGui
 	}
 
 	done := make(chan bool)
@@ -122,6 +159,8 @@ func main() {
 
 	if doGUI {
 		makeGUI()
+	} else {
+		PrintHistory()
 	}
 
 	<-done
