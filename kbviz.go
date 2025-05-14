@@ -166,14 +166,62 @@ func main() {
 	<-done
 }
 
+func scaleTable(sz *qt6.QSize) {
+	tableMu.Lock()
+	w, h := sz.Width(), sz.Height()
+	table.SetRowHeight(0, h)
+	table.SetColumnCount(w / h)
+	table.SetFixedSize2(w-w%h, h)
+	for i := range table.ColumnCount() {
+		table.SetColumnWidth(i, h)
+		table.SetCellWidget(0, i, qt6.NewQLabel3("").QWidget)
+	}
+	tableMu.Unlock()
+	PrintHistory()
+}
+
 func makeGUI() {
 	fmt.Println("gui")
 	qt6.NewQApplication(os.Args)
 	defer qt6.QApplication_Exec()
 
-	win := qt6.NewQMainWindow(nil)
+	win := qt6.NewQWidget(nil)
 	win.SetWindowTitle("KbViz")
-	win.SetMinimumSize2(400, 40)
+	ico := qt6.QIcon_FromTheme("ktouch")
+	win.SetWindowIcon(ico)
+	win.SetFixedSize2(640, 40)
+
+	table = qt6.NewQTableWidget(nil)
+	table.SetRowCount(1)
+	table.HorizontalHeader().SetVisible(false)
+	table.VerticalHeader().SetVisible(false)
+	table.SetSelectionMode(qt6.QAbstractItemView__NoSelection)
+	table.HorizontalScrollBar().SetVisible(false)
+	table.HorizontalHeader().SetMinimumSectionSize(1)
+
+	layout := qt6.NewQVBoxLayout(nil)
+	layout.SetContentsMargins(0, 0, 0, 0)
+	layout.AddWidget3(table.QWidget, 0, qt6.AlignCenter)
+
+	win.SetLayout(layout.QLayout)
+	win.SetContentsMargins(0, 0, 0, 0)
+
+	win.OnResizeEvent(func(_ func(event *qt6.QResizeEvent), evt *qt6.QResizeEvent) {
+		scaleTable(evt.Size())
+	})
+
+	scaleTable(win.Size())
+
+	win.OnCloseEvent(func(_ func(event *qt6.QCloseEvent), evt *qt6.QCloseEvent) {
+		os.Exit(0)
+	})
+
+	win.OnShowEvent(func(_ func(event *qt6.QShowEvent), evt *qt6.QShowEvent) {
+		win.SetMaximumSize2(65535, 512)
+		win.SetMinimumSize2(240, 24)
+	})
+
+	win.SetWindowFlags(qt6.WindowStaysOnTopHint)
 	win.Show()
 }
 
@@ -240,6 +288,10 @@ func listen(done chan bool, dev *evdev.InputDevice) {
 func goHandle(dev *evdev.InputDevice, evt *evdev.InputEvent, skip *ModSet[bool]) {
 	switch evt.Type {
 	case evdev.EV_KEY:
+		if ignoreEvt[evt.Code] {
+			return
+		}
+
 		key := makeKey(skip, dev, evt)
 		if key == nil {
 			return
@@ -285,7 +337,7 @@ func (key Key) String(withCount bool) string {
 	if !key.Found {
 		sub = fmt.Sprintf("\x1b[92;1m<%d: %s>\x1b[0m", key.Code, key.Name)
 	} else if utf8.RuneCountInString(key.Char) > 1 && r < 255 {
-		sub = fmt.Sprintf("\x1b[94;1m<%s>\x1b[0m", sub)
+		sub = fmt.Sprintf("\x1b[1m%s\x1b[0m", sub)
 	} else if r == leftCharRune {
 		sub = fmt.Sprintf("\x1b[93;1m%s\x1b[94;1m%s\x1b[0m", leftChar, sub[sz:])
 	} else if r > 255 {
@@ -323,13 +375,13 @@ func (key Key) String(withCount bool) string {
 	return sub
 }
 
-func (key Key) HTMLString() string {
+func (key *Key) Qt() *qt6.QWidget {
 	sub := key.Char
 	r, sz := utf8.DecodeRuneInString(sub + ".")
 	if !key.Found {
-		sub = fmt.Sprintf("<font color='%s'>&lt;%d: <b>%s</b>&gt;</font>", sakuraTree, key.Code, key.Name)
+		sub = fmt.Sprintf("<font color='%s'>%d: <b>%s</b></font>", sakuraTree, key.Code, key.Name)
 	} else if utf8.RuneCountInString(key.Char) > 1 && r < 255 {
-		sub = fmt.Sprintf("<font color='%s'>&lt;<b>%s</b>&gt</font>", sakuraIris, sub)
+		sub = fmt.Sprintf("<b>%s</b>", sub)
 	} else if r == leftCharRune {
 		sub = fmt.Sprintf("<font color='%s'>%s</font>", sakuraGold, leftChar) +
 			fmt.Sprintf("<font color='%s'><b>%s</b></font>", sakuraIris, sub[sz:])
@@ -368,9 +420,58 @@ func (key Key) HTMLString() string {
 	if key.Held.Meta {
 		sub = modHtml.Meta + sub
 	}
-	sub = fmt.Sprintf("%s<i><font color='%s'>×%d</font></i>", sub, sakuraRose, key.Count)
+	if key.Count > 1 {
+		sub = fmt.Sprintf("%s<i><font color='%s'>×%d</font></i>", sub, sakuraRose, key.Count)
+	}
 
-	return sub
+	label := qt6.NewQLabel3(sub)
+	label.SetFont(key.QtFont())
+	label.SetToolTip(fmt.Sprintf("<%d> %s", key.Code, key.Name))
+	layout := qt6.NewQHBoxLayout(nil)
+	layout.AddWidget3(label.QWidget, 0, qt6.AlignCenter)
+
+	widget := qt6.NewQWidget(nil)
+	widget.SetLayout(layout.QLayout)
+
+	return widget
+}
+
+func (key Key) QtFont() *qt6.QFont {
+	n := utf8.RuneCountInString(ansi.ReplaceAllString(key.String(true), ""))
+	h := table.Size().Height()
+	maxWidth := min(h-16, int(float64(h)*0.8))
+	maxHeight := int(float64(h) * 0.6)
+	hash := maxWidth*37 + n
+
+	font, ok := fontCache[hash]
+	if ok {
+		return font
+	}
+
+	if *_flagFontFamily == "" {
+		font = qt6.QFontDatabase_SystemFont(qt6.QFontDatabase__FixedFont)
+	} else {
+		font = qt6.NewQFont2(*_flagFontFamily)
+	}
+	sz := 1024
+	font.SetPixelSize(sz)
+
+	metric := qt6.NewQFontMetrics(font)
+	text := strings.Repeat("x", n)
+
+	for metric.BoundingRectWithText(text).Width() >= maxWidth {
+		sz = min(sz-1, sz*maxWidth/metric.BoundingRectWithText(text).Width())
+		font.SetPixelSize(sz)
+		metric = qt6.NewQFontMetrics(font)
+	}
+	for metric.BoundingRectWithText(text).Height() >= maxHeight {
+		sz = min(sz-1, sz*maxHeight/metric.BoundingRectWithText(text).Height())
+		font.SetPixelSize(sz)
+		metric = qt6.NewQFontMetrics(font)
+	}
+
+	fontCache[hash] = font
+	return font
 }
 
 func makeKey(skip *ModSet[bool], dev *evdev.InputDevice, evt *evdev.InputEvent) *Key {
@@ -428,9 +529,26 @@ func modState(dev *evdev.InputDevice) ModSet[bool] {
 	}
 }
 
+func PrintQtHistory() {
+	tableMu.Lock()
+	w := table.ColumnCount()
+	for i := range w {
+		if i >= len(history) {
+			cell := table.CellWidget(0, w-i-1)
+			if cell != nil {
+				cell.SetVisible(false)
+			}
+		} else {
+			key := history[len(history)-1-i]
+			table.SetCellWidget(0, w-i-1, key.Qt())
+		}
+	}
+	tableMu.Unlock()
+}
+
 func PrintHistory() {
-	if !term.IsTerminal(0) {
-		// not a tty
+	if table != nil {
+		mainthread.Start(PrintQtHistory)
 		return
 	}
 
