@@ -61,6 +61,12 @@ var (
 	sakuraLove = "#d87576"
 )
 
+var ignoreEvt = map[evdev.EvCode]bool{
+	evdev.BTN_TOOL_FINGER:    true,
+	evdev.BTN_TOUCH:          true,
+	evdev.BTN_TOOL_DOUBLETAP: true,
+	evdev.BTN_TOOL_TRIPLETAP: true,
+}
 func main() {
 	if syscall.Geteuid() != 0 {
 		escalate()
