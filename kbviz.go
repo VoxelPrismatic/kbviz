@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/holoplot/go-evdev"
 	"github.com/mappu/miqt/qt6"
+	"github.com/mappu/miqt/qt6/mainthread"
 )
 
 func escalate() {
@@ -49,8 +52,12 @@ func escalate() {
 }
 
 var (
-	history   []Key
-	historyMu sync.Mutex
+	history         []Key
+	historyMu       sync.Mutex
+	table           *qt6.QTableWidget
+	tableMu         sync.Mutex
+	fontCache       = map[int]*qt6.QFont{}
+	_flagFontFamily *string
 )
 
 var (
