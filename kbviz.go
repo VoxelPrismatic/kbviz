@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 	"unicode/utf8"
 
 	"golang.org/x/term"
@@ -57,10 +58,11 @@ func escalate() {
 var (
 	history         []Key
 	historyMu       sync.Mutex
-	table           *qt6.QTableWidget
-	tableMu         sync.Mutex
-	fontCache       = map[int]*qt6.QFont{}
+	label           *qt6.QLabel
+	labelMu         sync.Mutex
+	font            *qt6.QFont
 	win             *qt6.QWidget
+	app             *qt6.QApplication
 	keyTime         time.Time
 	_flagFontFamily *string
 )
@@ -223,12 +225,6 @@ func main() {
 	})
 	flag.Func("cls-", "Ignore an event class (eg EV_KEY)", applyClass(false))
 	flag.Func("cls+", "Listen to an event class (eg EV_KEY)", applyClass(true))
-	_flagMaxW := flag.Uint("w-max", 0, "Set the maximum width in case Qt isn't behaving")
-	_flagMinW := flag.Uint("w-min", 0, "Set the minimum width in case Qt isn't behaving")
-	_flagFixW := flag.Uint("w-fix", 0, "Set the fixed width in case Qt isn't behaving")
-	_flagMaxH := flag.Uint("h-max", 0, "Set the maximum height in case Qt isn't behaving")
-	_flagMinH := flag.Uint("h-min", 0, "Set the minimum height in case Qt isn't behaving")
-	_flagFixH := flag.Uint("h-fix", 0, "Set the fixed height in case Qt isn't behaving")
 	_flagTimeout := flag.Uint("timeout", 5, "Time before clearing the output")
 
 	flag.Parse()
@@ -258,7 +254,7 @@ func main() {
 	}()
 
 	if doGUI {
-		makeGUI(Sizes{_flagMaxW, _flagMinW, _flagFixW}, Sizes{_flagMaxH, _flagMinH, _flagFixH})
+		makeGUI()
 	} else {
 		PrintHistory()
 	}
@@ -266,22 +262,13 @@ func main() {
 	<-done
 }
 
-func scaleTable(sz *qt6.QSize) {
-	tableMu.Lock()
-	w, h := sz.Width(), sz.Height()
-	table.SetRowHeight(0, h)
-	table.SetColumnCount(w / h)
-	table.SetFixedSize2(w-w%h, h)
-	for i := range table.ColumnCount() {
-		table.SetColumnWidth(i, h)
-		table.SetCellWidget(0, i, qt6.NewQLabel3("").QWidget)
-	}
-	tableMu.Unlock()
 func scaleLabel(sz *qt6.QSize) {
 	labelMu.Lock()
 	font.SetPixelSize(int(float64(sz.Height()) * 0.8))
 	label.SetFont(font)
 	label.SetFixedHeight(sz.Height())
+	label.SetFixedWidth(sz.Width() - 16)
+	label.SetAlignment(qt6.AlignRight)
 	labelMu.Unlock()
 	PrintHistory()
 }
@@ -292,10 +279,11 @@ type Sizes struct {
 	Fix *uint
 }
 
-func makeGUI(width Sizes, height Sizes) {
+func makeGUI() {
 	fmt.Println("gui")
-	qt6.NewQApplication(os.Args)
+	app = qt6.NewQApplication(os.Args)
 	defer qt6.QApplication_Exec()
+	fmt.Println(app.StyleSheet())
 
 	win = qt6.NewQWidget(nil)
 	win.SetWindowTitle("KbViz")
@@ -303,81 +291,66 @@ func makeGUI(width Sizes, height Sizes) {
 	win.SetWindowIcon(ico)
 	win.SetFixedSize2(640, 40)
 
-	table = qt6.NewQTableWidget(nil)
-	table.SetRowCount(1)
-	table.HorizontalHeader().SetVisible(false)
-	table.VerticalHeader().SetVisible(false)
-	table.SetSelectionMode(qt6.QAbstractItemView__NoSelection)
-	table.HorizontalScrollBar().SetVisible(false)
-	table.HorizontalHeader().SetMinimumSectionSize(1)
+	if _flagFontFamily == nil || *_flagFontFamily == "" {
+		font = qt6.QFontDatabase_SystemFont(qt6.QFontDatabase__FixedFont)
+	} else {
+		font = qt6.NewQFont2(*_flagFontFamily)
+	}
 
-	layout := qt6.NewQVBoxLayout(nil)
+	label = qt6.NewQLabel(nil)
+	label.SetMinimumSize2(1, 1)
+	label.SetAlignment(qt6.AlignRight)
+	label.SetFont(font)
+
+	layout := qt6.NewQHBoxLayout(nil)
 	layout.SetContentsMargins(0, 0, 0, 0)
-	layout.AddWidget3(table.QWidget, 0, qt6.AlignCenter)
+	layout.SetDirection(qt6.QBoxLayout__RightToLeft)
+	layout.AddWidget3(label.QWidget, 0, qt6.AlignRight)
 
+	win.SetLayoutDirection(qt6.RightToLeft)
 	win.SetLayout(layout.QLayout)
-	win.SetContentsMargins(0, 0, 0, 0)
+	win.SetContentsMargins(8, 0, 8, 0)
 
-	win.OnResizeEvent(func(_ func(event *qt6.QResizeEvent), evt *qt6.QResizeEvent) {
-		SetSize(win, width, height)
+	win.OnResizeEvent(func(_ func(_ *qt6.QResizeEvent), evt *qt6.QResizeEvent) {
 		scaleLabel(evt.Size())
 	})
 
 	scaleLabel(win.Size())
 
-	win.OnCloseEvent(func(_ func(event *qt6.QCloseEvent), evt *qt6.QCloseEvent) {
+	win.OnCloseEvent(func(_ func(_ *qt6.QCloseEvent), evt *qt6.QCloseEvent) {
 		os.Exit(0)
 	})
 
 	win.OnShowEvent(func(_ func(event *qt6.QShowEvent), evt *qt6.QShowEvent) {
-		win.SetMaximumSize2(65535, 512)
-		win.SetMinimumSize2(240, 1)
+		win.SetMaximumSize2(65535, 8192)
+		win.SetMinimumSize2(16, 16)
 
-		SetSize(win, width, height)
 		scaleLabel(win.Size())
-		layout.SetSizeConstraint(qt6.QLayout__SetNoConstraint)
 	})
 
-	win.SetWindowFlags(qt6.WindowStaysOnTopHint)
+	win.OnKeyPressEvent(func(_ func(_ *qt6.QKeyEvent), evt *qt6.QKeyEvent) {
+		geo := win.Geometry()
+		step := 8
+		mods := evt.Modifiers()
+		if mods&qt6.ShiftModifier > 0 {
+			step = 32
+		} else if mods&qt6.ControlModifier > 0 {
+			step = 1
+		}
+
+		switch qt6.Key(evt.Key()) {
+		case qt6.Key_H, qt6.Key_Left:
+			win.SetGeometry(geo.X(), geo.Y(), max(16, geo.Width()-step), geo.Height())
+		case qt6.Key_J, qt6.Key_Down:
+			win.SetGeometry(geo.X(), geo.Y(), geo.Width(), min(8192, geo.Height()+step))
+		case qt6.Key_K, qt6.Key_Up:
+			win.SetGeometry(geo.X(), geo.Y(), geo.Width(), max(16, geo.Height()-step))
+		case qt6.Key_L, qt6.Key_Right:
+			win.SetGeometry(geo.X(), geo.Y(), min(8192, geo.Width()+step), geo.Height())
+		}
+	})
+
 	win.Show()
-}
-
-type Sizeable interface {
-	SetFixedWidth(int)
-	SetMinimumWidth(int)
-	SetMaximumWidth(int)
-	SetFixedHeight(int)
-	SetMinimumHeight(int)
-	SetMaximumHeight(int)
-	Size() *qt6.QSize
-}
-
-func SetSize(obj Sizeable, w Sizes, h Sizes) {
-	if w.Max != nil && *w.Max > 0 {
-		obj.SetMaximumWidth(int(*w.Max))
-		fmt.Printf("Set max width: %d\n", *w.Max)
-	}
-	if w.Min != nil && *w.Min > 0 {
-		obj.SetMinimumWidth(int(*w.Min))
-		fmt.Printf("Set min width: %d\n", *w.Min)
-	}
-	if w.Fix != nil && *w.Fix > 0 {
-		obj.SetFixedWidth(int(*w.Fix))
-		fmt.Printf("Set fixed width: %d\n", *w.Fix)
-	}
-	if h.Max != nil && *h.Max > 0 {
-		obj.SetMaximumHeight(int(*h.Max))
-		fmt.Printf("Set max height: %d\n", *h.Max)
-	}
-	if h.Min != nil && *h.Min > 0 {
-		obj.SetMinimumHeight(int(*h.Min))
-		fmt.Printf("Set min height: %d\n", *h.Min)
-	}
-	if h.Fix != nil && *h.Fix > 0 {
-		obj.SetFixedHeight(int(*h.Fix))
-		fmt.Printf("Set fixed height: %d\n", *h.Fix)
-	}
-	fmt.Printf("Final size: %dx%d\n", obj.Size().Width(), obj.Size().Height())
 }
 
 func grabKeyboards() []*evdev.InputDevice {
@@ -403,9 +376,9 @@ func grabKeyboards() []*evdev.InputDevice {
 
 		good := false
 		for _, t := range dev.CapableTypes() {
-			switch t {
-			case evdev.EV_KEY:
+			if classes[t] {
 				good = true
+				break
 			}
 		}
 		if good {
@@ -422,7 +395,7 @@ func listen(done chan bool, dev *evdev.InputDevice) {
 	defer dev.Close()
 
 	path := dev.Path()
-	skip := ModSet[bool]{}
+	skip := map[evdev.EvType]*ModSet[bool]{}
 	name, err := dev.Name()
 	if err != nil {
 		panic(err)
@@ -436,24 +409,34 @@ func listen(done chan bool, dev *evdev.InputDevice) {
 			return
 		}
 
-		go goHandle(dev, evt, &skip)
+		if skip[evt.Type] == nil {
+			skip[evt.Type] = &ModSet[bool]{}
+		}
+
+		go goHandle(dev, evt, skip[evt.Type])
 	}
 }
 
 func goHandle(dev *evdev.InputDevice, evt *evdev.InputEvent, skip *ModSet[bool]) {
 	ignoreMap, ok := ignoreEvt[evt.Type]
-	if ok && ignoreMap[evt.Code] {
+	if !classes[evt.Type] || (ok && ignoreMap[evt.Code]) {
 		return
 	}
 
 	key := makeKey(skip, dev, evt)
+	fmt.Println(key)
 	if key == nil {
 		return
 	}
+
 	historyMu.Lock()
 	var last *Key
 	if len(history) > 0 {
 		last = &history[len(history)-1]
+		for i := len(history) - 1; (i >= 0) && (last.Type != key.Type); i-- {
+			fmt.Printf("-> %d\n", i)
+			last = &history[i]
+		}
 	} else {
 		last = &Key{}
 	}
@@ -464,11 +447,13 @@ func goHandle(dev *evdev.InputDevice, evt *evdev.InputEvent, skip *ModSet[bool])
 		history = append(history, *key)
 	}
 	historyMu.Unlock()
+
 	keyTime = time.Now()
 	PrintHistory()
 }
 
 type Key struct {
+	Type  evdev.EvType
 	Char  string
 	Code  evdev.EvCode
 	Name  string
@@ -478,7 +463,7 @@ type Key struct {
 }
 
 func (this Key) Equals(other Key) bool {
-	return this.Code == other.Code &&
+	return this.Name == other.Name &&
 		this.Held.Shift == other.Held.Shift &&
 		this.Held.Ctrl == other.Held.Ctrl &&
 		this.Held.Alt == other.Held.Alt &&
@@ -529,7 +514,7 @@ func (key Key) String(withCount bool) string {
 	return sub
 }
 
-func (key *Key) Qt() *qt6.QWidget {
+func (key *Key) Qt() string {
 	sub := key.Char
 	r, sz := utf8.DecodeRuneInString(sub + ".")
 	if !key.Found {
@@ -578,65 +563,23 @@ func (key *Key) Qt() *qt6.QWidget {
 		sub = fmt.Sprintf("%s<i><font color='%s'>×%d</font></i>", sub, sakuraRose, key.Count)
 	}
 
-	label := qt6.NewQLabel3(sub)
-	label.SetFont(key.QtFont())
-	label.SetToolTip(fmt.Sprintf("<%d> %s", key.Code, key.Name))
-	layout := qt6.NewQHBoxLayout(nil)
-	layout.AddWidget3(label.QWidget, 0, qt6.AlignCenter)
-
-	widget := qt6.NewQWidget(nil)
-	widget.SetLayout(layout.QLayout)
-
-	return widget
-}
-
-func (key Key) QtFont() *qt6.QFont {
-	n := utf8.RuneCountInString(ansi.ReplaceAllString(key.String(true), ""))
-	h := table.Size().Height()
-	maxWidth := min(h-16, int(float64(h)*0.8))
-	maxHeight := int(float64(h) * 0.6)
-	hash := maxWidth*37 + n
-
-	font, ok := fontCache[hash]
-	if ok {
-		return font
-	}
-
-	if *_flagFontFamily == "" {
-		font = qt6.QFontDatabase_SystemFont(qt6.QFontDatabase__FixedFont)
-	} else {
-		font = qt6.NewQFont2(*_flagFontFamily)
-	}
-	sz := 1024
-	font.SetPixelSize(sz)
-
-	metric := qt6.NewQFontMetrics(font)
-	text := strings.Repeat("x", n)
-
-	for metric.BoundingRectWithText(text).Width() >= maxWidth {
-		sz = min(sz-1, sz*maxWidth/metric.BoundingRectWithText(text).Width())
-		font.SetPixelSize(sz)
-		metric = qt6.NewQFontMetrics(font)
-	}
-	for metric.BoundingRectWithText(text).Height() >= maxHeight {
-		sz = min(sz-1, sz*maxHeight/metric.BoundingRectWithText(text).Height())
-		font.SetPixelSize(sz)
-		metric = qt6.NewQFontMetrics(font)
-	}
-
-	fontCache[hash] = font
-	return font
+	return sub
 }
 
 func makeKey(skip *ModSet[bool], dev *evdev.InputDevice, evt *evdev.InputEvent) *Key {
 	key := Key{
+		Type:  evt.Type,
 		Code:  evt.Code,
 		Name:  evt.CodeName(),
 		Held:  modState(dev),
 		Count: 1,
 	}
 
-	key.Char, key.Found = tokens[evt.Type][evt.Code]
+	if charMap, ok := tokens[evt.Type]; ok {
+		key.Char, key.Found = charMap[evt.Code]
+	} else {
+		key.Char, key.Found = "", false
+	}
 
 	jump := map[string]*bool{
 		tokens[evdev.EV_KEY][evdev.KEY_LEFTSHIFT]:  &skip.Shift,
@@ -684,24 +627,37 @@ func modState(dev *evdev.InputDevice) ModSet[bool] {
 }
 
 func PrintQtHistory() {
-	tableMu.Lock()
-	w := table.ColumnCount()
-	for i := range w {
-		if i >= len(history) {
-			cell := table.CellWidget(0, w-i-1)
-			if cell != nil {
-				cell.SetVisible(false)
-			}
-		} else {
-			key := history[len(history)-1-i]
-			table.SetCellWidget(0, w-i-1, key.Qt())
+	metric := qt6.NewQFontMetrics(font)
+	w := label.Size().Width()
+
+	var i int
+	st := ""
+	ansi_st := ""
+	for i = len(history) - 1; i >= 0; i-- {
+		key := history[i]
+		if key.Char == "\x00" {
+			continue
 		}
+
+		ansi_st = ansi.ReplaceAllString(key.String(true), "") + " " + ansi_st
+		l := metric.BoundingRectWithText(ansi_st).Width()
+		if l >= w {
+			break
+		}
+		st = key.Qt() + " " + st
 	}
-	tableMu.Unlock()
+
+	if i >= 24 {
+		history = history[i:]
+	}
+
+	labelMu.Lock()
+	label.SetText(strings.TrimSpace(st))
+	labelMu.Unlock()
 }
 
 func PrintHistory() {
-	if table != nil {
+	if font != nil {
 		mainthread.Start(PrintQtHistory)
 		return
 	}
@@ -716,7 +672,7 @@ func PrintHistory() {
 	l := 0
 	for i = len(history) - 1; i >= 0; i-- {
 		key := history[i]
-		if key.Char == "" {
+		if key.Char == "\x00" {
 			continue
 		}
 		new_st := key.String(true) + " " + st
@@ -780,7 +736,7 @@ var (
 
 var tokens = map[evdev.EvType]map[evdev.EvCode]string{
 	evdev.EV_KEY: {
-		evdev.KEY_RESERVED:   "",
+		evdev.KEY_RESERVED:   "\x00",
 		evdev.BTN_RIGHT:      "",
 		evdev.BTN_LEFT:       "",
 		evdev.BTN_MIDDLE:     "",
