@@ -59,6 +59,7 @@ var (
 	tableMu         sync.Mutex
 	fontCache       = map[int]*qt6.QFont{}
 	win             *qt6.QWidget
+	keyTime         time.Time
 	_flagFontFamily *string
 )
 
@@ -239,6 +240,20 @@ func main() {
 	for _, dev := range devs {
 		go listen(done, dev)
 	}
+
+	keyTime = time.Now()
+	timeout := time.Duration(1000 * 1000 * 1000 * (*_flagTimeout))
+	go func() {
+		for true {
+			if time.Now().Sub(keyTime) >= timeout {
+				historyMu.Lock()
+				history = []Key{}
+				historyMu.Unlock()
+				PrintHistory()
+			}
+			time.Sleep(time.Duration(1000 * 1000 * 500))
+		}
+	}()
 
 	if doGUI {
 		makeGUI(Sizes{_flagMaxW, _flagMinW, _flagFixW}, Sizes{_flagMaxH, _flagMinH, _flagFixH})
