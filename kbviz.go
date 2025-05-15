@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -442,7 +443,14 @@ func goHandle(dev *evdev.InputDevice, evt *evdev.InputEvent, skip *ModSet[bool])
 	}
 	if last.Equals(*key) {
 		last.Count = last.Count + 1
-		key = last
+		dup := *last
+		slices.Reverse(history)
+		i := slices.Index(history, dup)
+		if i >= 0 {
+			history = slices.Concat(history[:i], history[i+1:])
+		}
+		slices.Reverse(history)
+		history = append(history, dup)
 	} else {
 		history = append(history, *key)
 	}
