@@ -69,29 +69,68 @@ var (
 	sakuraLove = "#d87576"
 )
 
-var ignoreEvt = map[evdev.EvCode]bool{
-	evdev.BTN_TOOL_FINGER:    true,
-	evdev.BTN_TOUCH:          true,
-	evdev.BTN_TOOL_DOUBLETAP: true,
-	evdev.BTN_TOOL_TRIPLETAP: true,
+var ignoreEvt = map[evdev.EvType]map[evdev.EvCode]bool{
+	evdev.EV_KEY: {
+		evdev.BTN_TOOL_FINGER:    true,
+		evdev.BTN_TOUCH:          true,
+		evdev.BTN_TOOL_DOUBLETAP: true,
+		evdev.BTN_TOOL_TRIPLETAP: true,
+	},
 }
 
-func evcode(val string) (evdev.EvCode, error) {
+var classes = map[evdev.EvType]bool{
+	evdev.EV_KEY: true,
+}
+
+var evStrMap = map[evdev.EvType]map[string]evdev.EvCode{
+	evdev.EV_SYN: evdev.SYNFromString,
+	evdev.EV_KEY: evdev.KEYFromString,
+	evdev.EV_REL: evdev.RELFromString,
+	evdev.EV_ABS: evdev.ABSFromString,
+	evdev.EV_MSC: evdev.MSCFromString,
+	evdev.EV_SW:  evdev.SWFromString,
+	evdev.EV_LED: evdev.LEDFromString,
+	evdev.EV_SND: evdev.SNDFromString,
+	evdev.EV_REP: evdev.REPFromString,
+	evdev.EV_FF:  evdev.FFFromString,
+}
+var evCodeMap = map[evdev.EvType]map[evdev.EvCode]string{
+	evdev.EV_SYN: evdev.SYNToString,
+	evdev.EV_KEY: evdev.KEYToString,
+	evdev.EV_REL: evdev.RELToString,
+	evdev.EV_ABS: evdev.ABSToString,
+	evdev.EV_MSC: evdev.MSCToString,
+	evdev.EV_SW:  evdev.SWToString,
+	evdev.EV_LED: evdev.LEDToString,
+	evdev.EV_SND: evdev.SNDToString,
+	evdev.EV_REP: evdev.REPToString,
+	evdev.EV_FF:  evdev.FFToString,
+}
+
+func evcode(val string) (evdev.EvType, evdev.EvCode, error) {
 	val = strings.ToUpper(val)
 	val = strings.ReplaceAll(val, "-", "_")
 	val = strings.ReplaceAll(val, " ", "_")
 
 	try, err := strconv.Atoi(val)
 	if err == nil {
-		return evdev.EvCode(try), nil
+		ret := evdev.EvCode(try)
+		for t, codeMap := range evCodeMap {
+			if _, ok := codeMap[ret]; ok {
+				return t, ret, nil
+			}
+		}
+		return 0, 0, fmt.Errorf("event `%d' does not exist", try)
 	}
 
-	code, ok := evdev.KEYFromString[val]
-	if !ok {
-		return 0, fmt.Errorf("key '%s' doesn't exist", val)
+	for t, codeMap := range evStrMap {
+		code, ok := codeMap[val]
+		if ok {
+			return t, code, nil
+		}
 	}
 
-	return code, nil
+	return 0, 0, fmt.Errorf("event `%s' doesn't exist", val)
 }
 
 func applyColor(ptr *string) func(val string) error {
@@ -105,13 +144,44 @@ func applyColor(ptr *string) func(val string) error {
 	}
 }
 
-func applyListener(set bool) func(val string) error {
+func applyEvent(set bool) func(val string) error {
 	return func(val string) error {
-		code, err := evcode(val)
+		t, code, err := evcode(val)
+		if ignoreEvt[t] == nil {
+			ignoreEvt[t] = map[evdev.EvCode]bool{}
+		}
+
 		if err == nil {
-			ignoreEvt[code] = set
+			ignoreEvt[t][code] = set
 		}
 		return err
+	}
+}
+func applyClass(set bool) func(val string) error {
+	return func(val string) error {
+		val = strings.ToUpper(val)
+		try, err := strconv.Atoi(val)
+		if err == nil {
+			code := evdev.EvType(try)
+			_, ok := evdev.EVToString[code]
+			if !ok {
+				return fmt.Errorf("class `%d' doesn't exist", code)
+			}
+			classes[code] = set
+			return nil
+		}
+
+		if !strings.HasPrefix(val, "EV_") {
+			val = "EV_" + val
+		}
+
+		t, ok := evdev.EVFromString[val]
+		if !ok {
+			return fmt.Errorf("class `%s' doesn't exist", val)
+		}
+
+		classes[t] = set
+		return nil
 	}
 }
 
@@ -130,20 +200,25 @@ func main() {
 	flag.Func("rose", "Set the color 'rose'", applyColor(&sakuraRose))
 	flag.Func("gold", "Set the color 'gold'", applyColor(&sakuraGold))
 	flag.Func("love", "Set the color 'rose'", applyColor(&sakuraLove))
-	flag.Func("X", "Do not listen to this event", applyListener(true))
-	flag.Func("L", "Listen to this event", applyListener(false))
+	flag.Func("evt-", "Ignore this event", applyEvent(true))
+	flag.Func("evt+", "Listen to this event", applyEvent(false))
 	flag.Func("S", "Set a symbol in the format of <key>=<char> eg KEY_NUM_8=8", func(val string) error {
 		parts := strings.SplitN(val, "=", 2)
 		if len(parts) != 2 {
 			return fmt.Errorf("not in proper format (eg KEY_NUM_8=8)")
 		}
 
-		code, err := evcode(parts[0])
+		t, code, err := evcode(parts[0])
 		if err == nil {
-			chars[code] = parts[1]
+			if tokens[t] == nil {
+				tokens[t] = map[evdev.EvCode]string{}
+			}
+			tokens[t][code] = parts[1]
 		}
 		return err
 	})
+	flag.Func("cls-", "Ignore an event class (eg EV_KEY)", applyClass(false))
+	flag.Func("cls+", "Listen to an event class (eg EV_KEY)", applyClass(true))
 
 	flag.Parse()
 
@@ -286,32 +361,31 @@ func listen(done chan bool, dev *evdev.InputDevice) {
 }
 
 func goHandle(dev *evdev.InputDevice, evt *evdev.InputEvent, skip *ModSet[bool]) {
-	switch evt.Type {
-	case evdev.EV_KEY:
-		if ignoreEvt[evt.Code] {
-			return
-		}
-
-		key := makeKey(skip, dev, evt)
-		if key == nil {
-			return
-		}
-		historyMu.Lock()
-		var last *Key
-		if len(history) > 0 {
-			last = &history[len(history)-1]
-		} else {
-			last = &Key{}
-		}
-		if last.Equals(*key) {
-			last.Count = last.Count + 1
-			key = last
-		} else {
-			history = append(history, *key)
-		}
-		historyMu.Unlock()
-		PrintHistory()
+	ignoreMap, ok := ignoreEvt[evt.Type]
+	if ok && ignoreMap[evt.Code] {
+		return
 	}
+
+	key := makeKey(skip, dev, evt)
+	if key == nil {
+		return
+	}
+	historyMu.Lock()
+	var last *Key
+	if len(history) > 0 {
+		last = &history[len(history)-1]
+	} else {
+		last = &Key{}
+	}
+	if last.Equals(*key) {
+		last.Count = last.Count + 1
+		key = last
+	} else {
+		history = append(history, *key)
+	}
+	historyMu.Unlock()
+	keyTime = time.Now()
+	PrintHistory()
 }
 
 type Key struct {
@@ -482,17 +556,17 @@ func makeKey(skip *ModSet[bool], dev *evdev.InputDevice, evt *evdev.InputEvent) 
 		Count: 1,
 	}
 
-	key.Char, key.Found = chars[evt.Code]
+	key.Char, key.Found = tokens[evt.Type][evt.Code]
 
 	jump := map[string]*bool{
-		chars[evdev.KEY_LEFTSHIFT]:  &skip.Shift,
-		chars[evdev.KEY_RIGHTSHIFT]: &skip.Shift,
-		chars[evdev.KEY_LEFTCTRL]:   &skip.Ctrl,
-		chars[evdev.KEY_RIGHTCTRL]:  &skip.Ctrl,
-		chars[evdev.KEY_LEFTALT]:    &skip.Alt,
-		chars[evdev.KEY_RIGHTALT]:   &skip.Alt,
-		chars[evdev.KEY_LEFTMETA]:   &skip.Meta,
-		chars[evdev.KEY_RIGHTMETA]:  &skip.Meta,
+		tokens[evdev.EV_KEY][evdev.KEY_LEFTSHIFT]:  &skip.Shift,
+		tokens[evdev.EV_KEY][evdev.KEY_RIGHTSHIFT]: &skip.Shift,
+		tokens[evdev.EV_KEY][evdev.KEY_LEFTCTRL]:   &skip.Ctrl,
+		tokens[evdev.EV_KEY][evdev.KEY_RIGHTCTRL]:  &skip.Ctrl,
+		tokens[evdev.EV_KEY][evdev.KEY_LEFTALT]:    &skip.Alt,
+		tokens[evdev.EV_KEY][evdev.KEY_RIGHTALT]:   &skip.Alt,
+		tokens[evdev.EV_KEY][evdev.KEY_LEFTMETA]:   &skip.Meta,
+		tokens[evdev.EV_KEY][evdev.KEY_RIGHTMETA]:  &skip.Meta,
 	}
 
 	ptr, isMod := jump[key.Char]
@@ -624,115 +698,117 @@ var (
 	rightCharRune, _ = utf8.DecodeRuneInString(rightChar)
 )
 
-var chars = map[evdev.EvCode]string{
-	evdev.KEY_RESERVED:   "",
-	evdev.BTN_RIGHT:      "",
-	evdev.BTN_LEFT:       "",
-	evdev.BTN_MIDDLE:     "",
-	evdev.BTN_EXTRA:      "¹",
-	evdev.BTN_SIDE:       "²",
-	evdev.KEY_ESC:        "󱥨",
-	evdev.KEY_1:          "1",
-	evdev.KEY_2:          "2",
-	evdev.KEY_3:          "3",
-	evdev.KEY_4:          "4",
-	evdev.KEY_5:          "5",
-	evdev.KEY_6:          "6",
-	evdev.KEY_7:          "7",
-	evdev.KEY_8:          "8",
-	evdev.KEY_9:          "9",
-	evdev.KEY_0:          "0",
-	evdev.KEY_MINUS:      "-",
-	evdev.KEY_EQUAL:      "=",
-	evdev.KEY_BACKSPACE:  "󰁮",
-	evdev.KEY_DELETE:     "󰹾",
-	evdev.KEY_TAB:        "↹",
-	evdev.KEY_Q:          "Q",
-	evdev.KEY_W:          "W",
-	evdev.KEY_E:          "E",
-	evdev.KEY_R:          "R",
-	evdev.KEY_T:          "T",
-	evdev.KEY_Y:          "Y",
-	evdev.KEY_U:          "U",
-	evdev.KEY_I:          "I",
-	evdev.KEY_O:          "O",
-	evdev.KEY_P:          "P",
-	evdev.KEY_LEFTBRACE:  "[",
-	evdev.KEY_RIGHTBRACE: "]",
-	evdev.KEY_ENTER:      "↲",
-	evdev.KEY_A:          "A",
-	evdev.KEY_S:          "S",
-	evdev.KEY_D:          "D",
-	evdev.KEY_F:          "F",
-	evdev.KEY_G:          "G",
-	evdev.KEY_H:          "H",
-	evdev.KEY_J:          "J",
-	evdev.KEY_K:          "K",
-	evdev.KEY_L:          "L",
-	evdev.KEY_SEMICOLON:  ";",
-	evdev.KEY_APOSTROPHE: "'",
-	evdev.KEY_GRAVE:      "`",
-	evdev.KEY_BACKSLASH:  "\\",
-	evdev.KEY_Z:          "Z",
-	evdev.KEY_X:          "X",
-	evdev.KEY_C:          "C",
-	evdev.KEY_V:          "V",
-	evdev.KEY_B:          "B",
-	evdev.KEY_N:          "N",
-	evdev.KEY_M:          "M",
-	evdev.KEY_COMMA:      ",",
-	evdev.KEY_DOT:        ".",
-	evdev.KEY_SLASH:      "/",
-	evdev.KEY_LEFT:       "←",
-	evdev.KEY_RIGHT:      "→",
-	evdev.KEY_UP:         "↑",
-	evdev.KEY_DOWN:       "↓",
-	evdev.KEY_SPACE:      "⋯",
-	evdev.KEY_HOME:       "⇐",
-	evdev.KEY_END:        "⇒",
-	evdev.KEY_PAGEUP:     "↥",
-	evdev.KEY_PAGEDOWN:   "↧",
-	evdev.KEY_INSERT:     "INS",
-	evdev.KEY_F1:         "󰊕1",
-	evdev.KEY_F2:         "󰊕2",
-	evdev.KEY_F3:         "󰊕3",
-	evdev.KEY_F4:         "󰊕4",
-	evdev.KEY_F5:         "󰊕5",
-	evdev.KEY_F6:         "󰊕6",
-	evdev.KEY_F7:         "󰊕7",
-	evdev.KEY_F8:         "󰊕8",
-	evdev.KEY_F9:         "󰊕9",
-	evdev.KEY_F10:        "󰊕10",
-	evdev.KEY_F11:        "󰊕11",
-	evdev.KEY_F12:        "󰊕12",
-	evdev.KEY_F13:        "󰊕13",
-	evdev.KEY_F14:        "󰊕14",
-	evdev.KEY_F15:        "󰊕15",
-	evdev.KEY_F16:        "󰊕16",
-	evdev.KEY_F17:        "󰊕17",
-	evdev.KEY_F18:        "󰊕18",
-	evdev.KEY_F19:        "󰊕19",
-	evdev.KEY_F20:        "󰊕20",
-	evdev.KEY_F21:        "󰊕21",
-	evdev.KEY_F22:        "󰊕22",
-	evdev.KEY_F23:        "󰊕23",
-	evdev.KEY_F24:        "󰊕24",
-	evdev.KEY_KP0:        "#0",
-	evdev.KEY_KP1:        "#1",
-	evdev.KEY_KP2:        "#2",
-	evdev.KEY_KP3:        "#3",
-	evdev.KEY_KP4:        "#4",
-	evdev.KEY_KP5:        "#5",
-	evdev.KEY_KP6:        "#6",
-	evdev.KEY_KP7:        "#7",
-	evdev.KEY_KP8:        "#8",
-	evdev.KEY_KP9:        "#9",
-	evdev.KEY_LEFTMETA:   leftChar + modChar.Meta,
-	evdev.KEY_RIGHTMETA:  modChar.Meta + rightChar,
-	evdev.KEY_LEFTCTRL:   leftChar + modChar.Ctrl,
-	evdev.KEY_RIGHTCTRL:  modChar.Ctrl + rightChar,
-	evdev.KEY_LEFTSHIFT:  leftChar + modChar.Shift,
-	evdev.KEY_RIGHTSHIFT: modChar.Shift + rightChar,
-	evdev.KEY_LEFTALT:    leftChar + modChar.Alt,
-	evdev.KEY_RIGHTALT:   modChar.Alt + rightChar,
+var tokens = map[evdev.EvType]map[evdev.EvCode]string{
+	evdev.EV_KEY: {
+		evdev.KEY_RESERVED:   "",
+		evdev.BTN_RIGHT:      "",
+		evdev.BTN_LEFT:       "",
+		evdev.BTN_MIDDLE:     "",
+		evdev.BTN_EXTRA:      "¹",
+		evdev.BTN_SIDE:       "²",
+		evdev.KEY_ESC:        "󱥨",
+		evdev.KEY_1:          "1",
+		evdev.KEY_2:          "2",
+		evdev.KEY_3:          "3",
+		evdev.KEY_4:          "4",
+		evdev.KEY_5:          "5",
+		evdev.KEY_6:          "6",
+		evdev.KEY_7:          "7",
+		evdev.KEY_8:          "8",
+		evdev.KEY_9:          "9",
+		evdev.KEY_0:          "0",
+		evdev.KEY_MINUS:      "-",
+		evdev.KEY_EQUAL:      "=",
+		evdev.KEY_BACKSPACE:  "󰁮",
+		evdev.KEY_DELETE:     "󰹾",
+		evdev.KEY_TAB:        "↹",
+		evdev.KEY_Q:          "Q",
+		evdev.KEY_W:          "W",
+		evdev.KEY_E:          "E",
+		evdev.KEY_R:          "R",
+		evdev.KEY_T:          "T",
+		evdev.KEY_Y:          "Y",
+		evdev.KEY_U:          "U",
+		evdev.KEY_I:          "I",
+		evdev.KEY_O:          "O",
+		evdev.KEY_P:          "P",
+		evdev.KEY_LEFTBRACE:  "[",
+		evdev.KEY_RIGHTBRACE: "]",
+		evdev.KEY_ENTER:      "↲",
+		evdev.KEY_A:          "A",
+		evdev.KEY_S:          "S",
+		evdev.KEY_D:          "D",
+		evdev.KEY_F:          "F",
+		evdev.KEY_G:          "G",
+		evdev.KEY_H:          "H",
+		evdev.KEY_J:          "J",
+		evdev.KEY_K:          "K",
+		evdev.KEY_L:          "L",
+		evdev.KEY_SEMICOLON:  ";",
+		evdev.KEY_APOSTROPHE: "'",
+		evdev.KEY_GRAVE:      "`",
+		evdev.KEY_BACKSLASH:  "\\",
+		evdev.KEY_Z:          "Z",
+		evdev.KEY_X:          "X",
+		evdev.KEY_C:          "C",
+		evdev.KEY_V:          "V",
+		evdev.KEY_B:          "B",
+		evdev.KEY_N:          "N",
+		evdev.KEY_M:          "M",
+		evdev.KEY_COMMA:      ",",
+		evdev.KEY_DOT:        ".",
+		evdev.KEY_SLASH:      "/",
+		evdev.KEY_LEFT:       "←",
+		evdev.KEY_RIGHT:      "→",
+		evdev.KEY_UP:         "↑",
+		evdev.KEY_DOWN:       "↓",
+		evdev.KEY_SPACE:      "⋯",
+		evdev.KEY_HOME:       "⇐",
+		evdev.KEY_END:        "⇒",
+		evdev.KEY_PAGEUP:     "↥",
+		evdev.KEY_PAGEDOWN:   "↧",
+		evdev.KEY_INSERT:     "INS",
+		evdev.KEY_F1:         "󰊕1",
+		evdev.KEY_F2:         "󰊕2",
+		evdev.KEY_F3:         "󰊕3",
+		evdev.KEY_F4:         "󰊕4",
+		evdev.KEY_F5:         "󰊕5",
+		evdev.KEY_F6:         "󰊕6",
+		evdev.KEY_F7:         "󰊕7",
+		evdev.KEY_F8:         "󰊕8",
+		evdev.KEY_F9:         "󰊕9",
+		evdev.KEY_F10:        "󰊕10",
+		evdev.KEY_F11:        "󰊕11",
+		evdev.KEY_F12:        "󰊕12",
+		evdev.KEY_F13:        "󰊕13",
+		evdev.KEY_F14:        "󰊕14",
+		evdev.KEY_F15:        "󰊕15",
+		evdev.KEY_F16:        "󰊕16",
+		evdev.KEY_F17:        "󰊕17",
+		evdev.KEY_F18:        "󰊕18",
+		evdev.KEY_F19:        "󰊕19",
+		evdev.KEY_F20:        "󰊕20",
+		evdev.KEY_F21:        "󰊕21",
+		evdev.KEY_F22:        "󰊕22",
+		evdev.KEY_F23:        "󰊕23",
+		evdev.KEY_F24:        "󰊕24",
+		evdev.KEY_KP0:        "#0",
+		evdev.KEY_KP1:        "#1",
+		evdev.KEY_KP2:        "#2",
+		evdev.KEY_KP3:        "#3",
+		evdev.KEY_KP4:        "#4",
+		evdev.KEY_KP5:        "#5",
+		evdev.KEY_KP6:        "#6",
+		evdev.KEY_KP7:        "#7",
+		evdev.KEY_KP8:        "#8",
+		evdev.KEY_KP9:        "#9",
+		evdev.KEY_LEFTMETA:   leftChar + modChar.Meta,
+		evdev.KEY_RIGHTMETA:  modChar.Meta + rightChar,
+		evdev.KEY_LEFTCTRL:   leftChar + modChar.Ctrl,
+		evdev.KEY_RIGHTCTRL:  modChar.Ctrl + rightChar,
+		evdev.KEY_LEFTSHIFT:  leftChar + modChar.Shift,
+		evdev.KEY_RIGHTSHIFT: modChar.Shift + rightChar,
+		evdev.KEY_LEFTALT:    leftChar + modChar.Alt,
+		evdev.KEY_RIGHTALT:   modChar.Alt + rightChar,
+	},
 }
