@@ -58,6 +58,7 @@ var (
 	table           *qt6.QTableWidget
 	tableMu         sync.Mutex
 	fontCache       = map[int]*qt6.QFont{}
+	win             *qt6.QWidget
 	_flagFontFamily *string
 )
 
@@ -219,6 +220,13 @@ func main() {
 	})
 	flag.Func("cls-", "Ignore an event class (eg EV_KEY)", applyClass(false))
 	flag.Func("cls+", "Listen to an event class (eg EV_KEY)", applyClass(true))
+	_flagMaxW := flag.Uint("w-max", 0, "Set the maximum width in case Qt isn't behaving")
+	_flagMinW := flag.Uint("w-min", 0, "Set the minimum width in case Qt isn't behaving")
+	_flagFixW := flag.Uint("w-fix", 0, "Set the fixed width in case Qt isn't behaving")
+	_flagMaxH := flag.Uint("h-max", 0, "Set the maximum height in case Qt isn't behaving")
+	_flagMinH := flag.Uint("h-min", 0, "Set the minimum height in case Qt isn't behaving")
+	_flagFixH := flag.Uint("h-fix", 0, "Set the fixed height in case Qt isn't behaving")
+	_flagTimeout := flag.Uint("timeout", 5, "Time before clearing the output")
 
 	flag.Parse()
 
@@ -233,7 +241,7 @@ func main() {
 	}
 
 	if doGUI {
-		makeGUI()
+		makeGUI(Sizes{_flagMaxW, _flagMinW, _flagFixW}, Sizes{_flagMaxH, _flagMinH, _flagFixH})
 	} else {
 		PrintHistory()
 	}
@@ -252,15 +260,27 @@ func scaleTable(sz *qt6.QSize) {
 		table.SetCellWidget(0, i, qt6.NewQLabel3("").QWidget)
 	}
 	tableMu.Unlock()
+func scaleLabel(sz *qt6.QSize) {
+	labelMu.Lock()
+	font.SetPixelSize(int(float64(sz.Height()) * 0.8))
+	label.SetFont(font)
+	label.SetFixedHeight(sz.Height())
+	labelMu.Unlock()
 	PrintHistory()
 }
 
-func makeGUI() {
+type Sizes struct {
+	Max *uint
+	Min *uint
+	Fix *uint
+}
+
+func makeGUI(width Sizes, height Sizes) {
 	fmt.Println("gui")
 	qt6.NewQApplication(os.Args)
 	defer qt6.QApplication_Exec()
 
-	win := qt6.NewQWidget(nil)
+	win = qt6.NewQWidget(nil)
 	win.SetWindowTitle("KbViz")
 	ico := qt6.QIcon_FromTheme("ktouch")
 	win.SetWindowIcon(ico)
@@ -282,10 +302,11 @@ func makeGUI() {
 	win.SetContentsMargins(0, 0, 0, 0)
 
 	win.OnResizeEvent(func(_ func(event *qt6.QResizeEvent), evt *qt6.QResizeEvent) {
-		scaleTable(evt.Size())
+		SetSize(win, width, height)
+		scaleLabel(evt.Size())
 	})
 
-	scaleTable(win.Size())
+	scaleLabel(win.Size())
 
 	win.OnCloseEvent(func(_ func(event *qt6.QCloseEvent), evt *qt6.QCloseEvent) {
 		os.Exit(0)
@@ -293,11 +314,53 @@ func makeGUI() {
 
 	win.OnShowEvent(func(_ func(event *qt6.QShowEvent), evt *qt6.QShowEvent) {
 		win.SetMaximumSize2(65535, 512)
-		win.SetMinimumSize2(240, 24)
+		win.SetMinimumSize2(240, 1)
+
+		SetSize(win, width, height)
+		scaleLabel(win.Size())
+		layout.SetSizeConstraint(qt6.QLayout__SetNoConstraint)
 	})
 
 	win.SetWindowFlags(qt6.WindowStaysOnTopHint)
 	win.Show()
+}
+
+type Sizeable interface {
+	SetFixedWidth(int)
+	SetMinimumWidth(int)
+	SetMaximumWidth(int)
+	SetFixedHeight(int)
+	SetMinimumHeight(int)
+	SetMaximumHeight(int)
+	Size() *qt6.QSize
+}
+
+func SetSize(obj Sizeable, w Sizes, h Sizes) {
+	if w.Max != nil && *w.Max > 0 {
+		obj.SetMaximumWidth(int(*w.Max))
+		fmt.Printf("Set max width: %d\n", *w.Max)
+	}
+	if w.Min != nil && *w.Min > 0 {
+		obj.SetMinimumWidth(int(*w.Min))
+		fmt.Printf("Set min width: %d\n", *w.Min)
+	}
+	if w.Fix != nil && *w.Fix > 0 {
+		obj.SetFixedWidth(int(*w.Fix))
+		fmt.Printf("Set fixed width: %d\n", *w.Fix)
+	}
+	if h.Max != nil && *h.Max > 0 {
+		obj.SetMaximumHeight(int(*h.Max))
+		fmt.Printf("Set max height: %d\n", *h.Max)
+	}
+	if h.Min != nil && *h.Min > 0 {
+		obj.SetMinimumHeight(int(*h.Min))
+		fmt.Printf("Set min height: %d\n", *h.Min)
+	}
+	if h.Fix != nil && *h.Fix > 0 {
+		obj.SetFixedHeight(int(*h.Fix))
+		fmt.Printf("Set fixed height: %d\n", *h.Fix)
+	}
+	fmt.Printf("Final size: %dx%d\n", obj.Size().Width(), obj.Size().Height())
 }
 
 func grabKeyboards() []*evdev.InputDevice {
