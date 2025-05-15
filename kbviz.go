@@ -23,7 +23,9 @@ import (
 func escalate() {
 	var cmd *exec.Cmd
 	if term.IsTerminal(0) {
-		cmd = exec.Command("sudo", os.Args...)
+		args := []string{"-E"}
+		args = append(args, os.Args...)
+		cmd = exec.Command("sudo", args...)
 	} else {
 
 		file, err := filepath.Abs(os.Args[0])
