@@ -29,7 +29,6 @@ func escalate() {
 		args = append(args, os.Args...)
 		cmd = exec.Command("sudo", args...)
 	} else {
-
 		file, err := filepath.Abs(os.Args[0])
 		if err != nil {
 			panic(err)
@@ -57,10 +56,13 @@ func escalate() {
 }
 
 var (
-	history         []Key
+	history         []*Key
 	historyMu       sync.Mutex
+	kblist          *qt6.QHBoxLayout
+	kblistMu        *qt6.QHBoxLayout
 	label           *qt6.QLabel
 	labelMu         sync.Mutex
+	kb2             *qt6.QScrollArea
 	font            *qt6.QFont
 	win             *qt6.QWidget
 	app             *qt6.QApplication
@@ -74,6 +76,7 @@ var (
 	sakuraRose = "#d875a7"
 	sakuraGold = "#b4b433"
 	sakuraLove = "#d87576"
+	sakuraBg   = "#f2e1ea"
 )
 
 var ignoreEvt = map[evdev.EvType]map[evdev.EvCode]bool{
@@ -207,6 +210,7 @@ func main() {
 	flag.Func("rose", "Set the color 'rose'", applyColor(&sakuraRose))
 	flag.Func("gold", "Set the color 'gold'", applyColor(&sakuraGold))
 	flag.Func("love", "Set the color 'rose'", applyColor(&sakuraLove))
+	flag.Func("bg", "Set the color 'bg'", applyColor(&sakuraBg))
 	flag.Func("evt-", "Ignore this event", applyEvent(true))
 	flag.Func("evt+", "Listen to this event", applyEvent(false))
 	flag.Func("S", "Set a symbol in the format of <key>=<char> eg KEY_NUM_8=8", func(val string) error {
@@ -244,9 +248,9 @@ func main() {
 	timeout := time.Duration(1000 * 1000 * 1000 * (*_flagTimeout))
 	go func() {
 		for true {
-			if time.Now().Sub(keyTime) >= timeout {
+			if time.Since(keyTime) >= timeout {
 				historyMu.Lock()
-				history = []Key{}
+				history = []*Key{}
 				historyMu.Unlock()
 				PrintHistory()
 			}
@@ -263,14 +267,28 @@ func main() {
 	<-done
 }
 
-func scaleLabel(sz *qt6.QSize) {
+func recursiveClear(layout *qt6.QLayout) {
+	if layout == nil {
+		return
+	}
+
+	for layout.Count() > 0 {
+		item := layout.TakeAt(0)
+		if childLayout := item.Layout(); childLayout != nil {
+			recursiveClear(childLayout)
+			childLayout.DeleteLater()
+		}
+		if childWidget := item.Widget(); childWidget != nil {
+			childWidget.DeleteLater()
+		}
+		item.Delete()
+	}
+}
+
+func scaleLabel(_ *qt6.QSize) {
 	labelMu.Lock()
-	font.SetPixelSize(int(float64(sz.Height()) * 0.8))
-	label.SetFont(font)
-	label.SetFixedHeight(sz.Height())
-	label.SetFixedWidth(sz.Width() - 16)
-	label.SetAlignment(qt6.AlignRight)
-	labelMu.Unlock()
+	defer labelMu.Unlock()
+
 	PrintHistory()
 }
 
@@ -284,7 +302,6 @@ func makeGUI() {
 	fmt.Println("gui")
 	app = qt6.NewQApplication(os.Args)
 	defer qt6.QApplication_Exec()
-	fmt.Println(app.StyleSheet())
 
 	win = qt6.NewQWidget(nil)
 	win.SetWindowTitle("KbViz")
@@ -293,7 +310,7 @@ func makeGUI() {
 	win.SetFixedSize2(640, 40)
 
 	if _flagFontFamily == nil || *_flagFontFamily == "" {
-		font = qt6.QFontDatabase_SystemFont(qt6.QFontDatabase__FixedFont)
+		font = qt6.QFontDatabase_SystemFont(qt6.QFontDatabase__GeneralFont)
 	} else {
 		font = qt6.NewQFont2(*_flagFontFamily)
 	}
@@ -303,14 +320,35 @@ func makeGUI() {
 	label.SetAlignment(qt6.AlignRight)
 	label.SetFont(font)
 
-	layout := qt6.NewQHBoxLayout(nil)
-	layout.SetContentsMargins(0, 0, 0, 0)
-	layout.SetDirection(qt6.QBoxLayout__RightToLeft)
-	layout.AddWidget3(label.QWidget, 0, qt6.AlignRight)
+	// kblist = qt6.NewQHBoxLayout(nil)
+	// kblist.SetContentsMargins(4, 4, 4, 4)
+	// layout.SetDirection(qt6.QBoxLayout__RightToLeft)
+	// layout.AddWidget3(label.QWidget, 0, qt6.AlignRight)
 
 	win.SetLayoutDirection(qt6.RightToLeft)
-	win.SetLayout(layout.QLayout)
-	win.SetContentsMargins(8, 0, 8, 0)
+	win.SetContentsMargins(0, 0, 0, 0)
+	/*
+		scrollarea = QScrollArea(parent.widget())
+		layout = QVBoxLayout(scrollarea)
+		realmScroll.setWidget(layout.widget())
+
+		layout.addWidget(QLabel("Test"))
+	*/
+
+	container := qt6.NewQWidget(nil)
+	kblist = qt6.NewQHBoxLayout(container)
+	kblist.SetDirection(qt6.QBoxLayout__RightToLeft)
+	kblist.SetContentsMargins(0, 0, 0, 0)
+	kblist.SetSpacing(4)
+
+	kb2 = qt6.NewQScrollArea(nil)
+	kb2.SetWidget(container)
+	kb2.SetWidgetResizable(true)
+	kb2.SetHorizontalScrollBarPolicy(qt6.ScrollBarAlwaysOff)
+
+	scroller := qt6.NewQVBoxLayout(win)
+	scroller.SetContentsMargins(0, 0, 0, 0)
+	scroller.AddWidget(kb2.QWidget)
 
 	win.OnResizeEvent(func(_ func(_ *qt6.QResizeEvent), evt *qt6.QResizeEvent) {
 		scaleLabel(evt.Size())
@@ -409,6 +447,7 @@ func listen(done chan bool, dev *evdev.InputDevice) {
 			done <- true
 			return
 		}
+		fmt.Println(evt)
 
 		if skip[evt.Type] == nil {
 			skip[evt.Type] = &ModSet[bool]{}
@@ -425,36 +464,33 @@ func goHandle(dev *evdev.InputDevice, evt *evdev.InputEvent, skip *ModSet[bool])
 	}
 
 	key := makeKey(skip, dev, evt)
-	fmt.Println(key)
 	if key == nil {
 		return
 	}
 
 	historyMu.Lock()
+	defer historyMu.Unlock()
 	var last *Key
 	if len(history) > 0 {
-		last = &history[len(history)-1]
+		last = history[len(history)-1]
 		for i := len(history) - 1; (i >= 0) && (last.Type != key.Type); i-- {
 			fmt.Printf("-> %d\n", i)
-			last = &history[i]
+			last = history[i]
 		}
 	} else {
 		last = &Key{}
 	}
 	if last.Equals(*key) {
 		last.Count = last.Count + 1
-		dup := *last
-		slices.Reverse(history)
-		i := slices.Index(history, dup)
-		if i >= 0 {
-			history = slices.Concat(history[:i], history[i+1:])
+		// Move event to front of list
+		i := slices.Index(history, last)
+		c := len(history) - 1
+		if i < c {
+			history = slices.Concat(history[:i], history[i+1:], []*Key{last})
 		}
-		slices.Reverse(history)
-		history = append(history, dup)
 	} else {
-		history = append(history, *key)
+		history = append(history, key)
 	}
-	historyMu.Unlock()
 
 	keyTime = time.Now()
 	PrintHistory()
@@ -468,6 +504,27 @@ type Key struct {
 	Found bool
 	Held  ModSet[bool]
 	Count int
+	Q     *QKey
+	QLock *sync.Mutex
+}
+
+type QKey struct {
+	Widget *qt6.QWidget
+	Layout *qt6.QVBoxLayout
+
+	KeyName   *qt6.QLabel
+	KeyCode   *qt6.QLabel
+	RepCount  *qt6.QLabel
+	CtrlBulb  *qt6.QLabel
+	MetaBulb  *qt6.QLabel
+	AltBulb   *qt6.QLabel
+	ShiftBulb *qt6.QLabel
+
+	HeadWidget *qt6.QWidget
+	HeadLayout *qt6.QHBoxLayout
+
+	FootWidget *qt6.QWidget
+	FootLayout *qt6.QHBoxLayout
 }
 
 func (this Key) Equals(other Key) bool {
@@ -522,56 +579,169 @@ func (key Key) String(withCount bool) string {
 	return sub
 }
 
-func (key *Key) Qt() string {
+type Corner int
+
+const (
+	NoCorner Corner = iota
+	TopLeft
+	TopRight
+	BotLeft
+	BotRight
+)
+
+func styleKeyPart(corner Corner) string {
+	cornerSz := 4
+	switch corner {
+	case TopLeft:
+		return fmt.Sprintf("background-color: %s; border-top-left-radius: %dpx;", sakuraBg, cornerSz)
+	case TopRight:
+		return fmt.Sprintf("background-color: %s; border-top-right-radius: %dpx;", sakuraBg, cornerSz)
+	case BotLeft:
+		return fmt.Sprintf("background-color: %s; border-bottom-left-radius: %dpx;", sakuraBg, cornerSz)
+	case BotRight:
+		return fmt.Sprintf("background-color: %s; border-bottom-right-radius: %dpx;", sakuraBg, cornerSz)
+	default:
+		return fmt.Sprintf("background-color: %s;", sakuraBg)
+	}
+}
+
+func (key *Key) NewQ() bool {
+	if key.Q != nil {
+		return false
+	}
+
+	key.Q = &QKey{}
+	gap := 1
+
+	/*
+		| key code    |    repeat count |
+		|-------------------------------|
+		|                               |
+		|      key name                 |
+		|                               |
+		|-------------------------------|
+		| shift  | meta  | ctrl  | alt  |
+	*/
+	key.Q.Widget = qt6.NewQWidget(nil)
+	key.Q.Layout = qt6.NewQVBoxLayout(key.Q.Widget)
+	key.Q.Layout.SetContentsMargins(4, 4, 4, 4)
+
+	key.Q.KeyName = qt6.NewQLabel3(" ")
+	key.Q.KeyCode = qt6.NewQLabel3(" ")
+	key.Q.RepCount = qt6.NewQLabel3(" ")
+	key.Q.CtrlBulb = qt6.NewQLabel3(" ")
+	key.Q.AltBulb = qt6.NewQLabel3(" ")
+	key.Q.MetaBulb = qt6.NewQLabel3(" ")
+	key.Q.ShiftBulb = qt6.NewQLabel3(" ")
+
+	key.Q.KeyName.SetStyleSheet(styleKeyPart(NoCorner))
+	key.Q.KeyCode.SetStyleSheet(styleKeyPart(TopLeft))
+	key.Q.RepCount.SetStyleSheet(styleKeyPart(TopRight))
+	key.Q.CtrlBulb.SetStyleSheet(styleKeyPart(BotLeft))
+	key.Q.AltBulb.SetStyleSheet(styleKeyPart(NoCorner))
+	key.Q.MetaBulb.SetStyleSheet(styleKeyPart(NoCorner))
+	key.Q.ShiftBulb.SetStyleSheet(styleKeyPart(BotRight))
+
+	key.Q.HeadWidget = qt6.NewQWidget(nil)
+	key.Q.HeadLayout = qt6.NewQHBoxLayout(key.Q.HeadWidget)
+	key.Q.HeadLayout.SetContentsMargins(0, 0, 0, 0)
+	key.Q.HeadLayout.SetSpacing(gap)
+	key.Q.HeadLayout.AddWidget(key.Q.RepCount.QWidget)
+	key.Q.HeadLayout.AddWidget(key.Q.KeyCode.QWidget)
+	key.Q.RepCount.SetAlignment(qt6.AlignRight)
+
+	key.Q.FootWidget = qt6.NewQWidget(nil)
+	key.Q.FootLayout = qt6.NewQHBoxLayout(key.Q.FootWidget)
+	key.Q.FootLayout.SetContentsMargins(0, 0, 0, 0)
+	key.Q.FootLayout.SetSpacing(gap)
+	key.Q.ShiftBulb.SetAlignment(qt6.AlignCenter)
+	key.Q.MetaBulb.SetAlignment(qt6.AlignCenter)
+	key.Q.CtrlBulb.SetAlignment(qt6.AlignCenter)
+	key.Q.AltBulb.SetAlignment(qt6.AlignCenter)
+	key.Q.FootLayout.AddWidget(key.Q.ShiftBulb.QWidget)
+	key.Q.FootLayout.AddWidget(key.Q.AltBulb.QWidget)
+	key.Q.FootLayout.AddWidget(key.Q.MetaBulb.QWidget)
+	key.Q.FootLayout.AddWidget(key.Q.CtrlBulb.QWidget)
+
+	key.Q.Layout.SetSpacing(gap)
+	key.Q.Layout.AddWidget(key.Q.HeadWidget)
+	key.Q.Layout.AddWidget2(key.Q.KeyName.QWidget, 1)
+	key.Q.Layout.AddWidget(key.Q.FootWidget)
+	key.Q.KeyName.SetAlignment(qt6.AlignCenter)
+
+	return true
+}
+
+func (key *Key) Widget() *qt6.QWidget {
+	if key.QLock == nil {
+		key.QLock = &sync.Mutex{}
+	}
+	key.QLock.Lock()
+	defer key.QLock.Unlock()
+
+	if !key.NewQ() {
+		if key.Count < 2 {
+			key.Q.RepCount.SetText(" ")
+		} else {
+			key.Q.RepCount.SetText(fmt.Sprintf("x%d", key.Count))
+		}
+		return nil
+	}
+
 	sub := key.Char
 	r, sz := utf8.DecodeRuneInString(sub + ".")
+	skipShift := false
 	if !key.Found {
-		sub = fmt.Sprintf("<font color='%s'>%d: <b>%s</b></font>", sakuraTree, key.Code, key.Name)
+		if strings.HasPrefix(key.Name, "KEY_") {
+			key.Q.KeyCode.SetText(fmt.Sprintf("key <b>%d</b>", key.Code))
+			key.Q.KeyName.SetText(fmt.Sprintf("<font color='%s'>%s</font>", sakuraTree, key.Name[len("KEY_"):]))
+		} else if strings.HasPrefix(key.Name, "BTN_") {
+			key.Q.KeyCode.SetText(fmt.Sprintf("btn <b>%d</b>", key.Code))
+			key.Q.KeyName.SetText(fmt.Sprintf("<font color='%s'>%s</font>", sakuraTree, key.Name[len("BTN_"):]))
+		} else {
+			key.Q.KeyCode.SetText(fmt.Sprintf("<b>%d</b>", key.Code))
+			key.Q.KeyName.SetText(fmt.Sprintf("<font color='%s'>%s</font>", sakuraTree, key.Name))
+		}
 	} else if utf8.RuneCountInString(key.Char) > 1 && r < 255 {
-		sub = fmt.Sprintf("<b>%s</b>", sub)
+		key.Q.KeyName.SetText(fmt.Sprintf("<b>%s</b>", sub))
 	} else if r == leftCharRune {
-		sub = fmt.Sprintf("<font color='%s'>%s</font>", sakuraGold, leftChar) +
-			fmt.Sprintf("<font color='%s'><b>%s</b></font>", sakuraIris, sub[sz:])
+		key.Q.KeyName.SetText(
+			fmt.Sprintf("<font color='%s'>%s</font>", sakuraGold, leftChar) +
+				fmt.Sprintf("<font color='%s'><b>%s</b></font>", sakuraIris, sub[sz:]),
+		)
 	} else if r > 255 {
 		r, sz = utf8.DecodeLastRuneInString(sub)
 		if r == rightCharRune {
-			sub = fmt.Sprintf("<font color='%s'><b>%s</b></font>", sakuraIris, sub[:len(sub)-sz]) +
-				fmt.Sprintf("<font color='%s'>%s</font>", sakuraGold, rightChar)
+			key.Q.KeyName.SetText(
+				fmt.Sprintf("<font color='%s'><b>%s</b></font>", sakuraIris, sub[:len(sub)-sz]) +
+					fmt.Sprintf("<font color='%s'>%s</font>", sakuraGold, rightChar),
+			)
 		} else {
-			sub = fmt.Sprintf("<font color='%s'><b>%s</b></font>", sakuraIris, sub)
+			key.Q.KeyName.SetText(
+				fmt.Sprintf("<font color='%s'><b>%s</b></font>", sakuraIris, sub),
+			)
 		}
+	} else if shift, exist := shifts[strings.ToLower(sub)]; key.Held.Shift && exist {
+		skipShift = true
+		key.Q.KeyName.SetText(shift)
 	} else {
-		sub = strings.ToLower(sub)
+		key.Q.KeyName.SetText(strings.ToLower(sub))
 	}
 
-	modHtml := ModSet[string]{
-		Shift: fmt.Sprintf("<font color='%s'><b>%s</b></font>", sakuraLove, modChar.Shift),
-		Ctrl:  fmt.Sprintf("<font color='%s'><b>%s</b></font>", sakuraLove, modChar.Ctrl),
-		Alt:   fmt.Sprintf("<font color='%s'><b>%s</b></font>", sakuraLove, modChar.Alt),
-		Meta:  fmt.Sprintf("<font color='%s'><b>%s</b></font>", sakuraLove, modChar.Meta),
-	}
-	if key.Held.Shift {
-		shift, exist := shifts[sub]
-		if exist {
-			sub = shift
-		} else {
-			sub = modHtml.Shift + sub
-		}
-	}
-	if key.Held.Alt {
-		sub = modHtml.Alt + sub
-	}
-	if key.Held.Ctrl {
-		sub = modHtml.Ctrl + sub
+	if key.Held.Shift && !skipShift {
+		key.Q.ShiftBulb.SetText(fmt.Sprintf("<font color='%s'><b>%s</font>", sakuraLove, modChar.Shift))
 	}
 	if key.Held.Meta {
-		sub = modHtml.Meta + sub
+		key.Q.MetaBulb.SetText(fmt.Sprintf("<font color='%s'><b>%s</font>", sakuraLove, modChar.Meta))
 	}
-	if key.Count > 1 {
-		sub = fmt.Sprintf("%s<i><font color='%s'>×%d</font></i>", sub, sakuraRose, key.Count)
+	if key.Held.Ctrl {
+		key.Q.CtrlBulb.SetText(fmt.Sprintf("<font color='%s'><b>%s</font>", sakuraLove, modChar.Ctrl))
+	}
+	if key.Held.Alt {
+		key.Q.AltBulb.SetText(fmt.Sprintf("<font color='%s'><b>%s</font>", sakuraLove, modChar.Alt))
 	}
 
-	return sub
+	return key.Q.Widget
 }
 
 func makeKey(skip *ModSet[bool], dev *evdev.InputDevice, evt *evdev.InputEvent) *Key {
@@ -635,33 +805,61 @@ func modState(dev *evdev.InputDevice) ModSet[bool] {
 }
 
 func PrintQtHistory() {
-	metric := qt6.NewQFontMetrics(font)
-	w := label.Size().Width()
+	labelMu.Lock()
+	defer labelMu.Unlock()
 
 	var i int
-	st := ""
-	ansi_st := ""
+	sz := kb2.Size().Height() - 8
+	if len(history) == 0 {
+		recursiveClear(kblist.QLayout)
+		kblist.AddStretch()
+	}
+
+	metrics := qt6.NewQFontMetrics(font)
+	altFont := qt6.NewQFont5(font)
+	smallFont := qt6.NewQFont5(font)
+	smallerFont := qt6.NewQFont5(font)
+	if sz < 32 {
+		font.SetPixelSize(sz / 4)
+		smallFont.SetPixelSize(sz / 4)
+	} else if sz < 64 {
+		font.SetPixelSize(sz / 3)
+		smallFont.SetPixelSize(sz / 6)
+	} else {
+		font.SetPixelSize(sz / 2)
+		smallFont.SetPixelSize(sz / 8)
+	}
+	smallerFont.SetPixelSize(smallFont.PixelSize() * 3 / 4)
+
 	for i = len(history) - 1; i >= 0; i-- {
 		key := history[i]
 		if key.Char == "\x00" {
 			continue
 		}
 
-		ansi_st = ansi.ReplaceAllString(key.String(true), "") + " " + ansi_st
-		l := metric.BoundingRectWithText(ansi_st).Width()
-		if l >= w {
-			break
+		if widget := key.Widget(); widget != nil {
+			kblist.AddWidget(widget)
 		}
-		st = key.Qt() + " " + st
-	}
 
-	if i >= 24 {
-		history = history[i:]
+		if key.Found {
+			key.Q.KeyName.SetFont(font)
+			key.Q.Widget.SetFixedSize2(sz, sz)
+		} else {
+			bounds := metrics.BoundingRectWithText(key.Q.KeyName.Text())
+			ratio := float64(bounds.Height()) / float64(bounds.Width())
+			height := ratio * float64(sz) * 4
+			altFont.SetPixelSize(int(height))
+			key.Q.KeyName.SetFont(altFont)
+			key.Q.Widget.SetFixedSize2(sz*2, sz)
+		}
+		key.Q.AltBulb.SetFont(smallFont)
+		key.Q.CtrlBulb.SetFont(smallFont)
+		key.Q.MetaBulb.SetFont(smallFont)
+		key.Q.RepCount.SetFont(smallFont)
+		key.Q.KeyCode.SetFont(smallFont)
+		key.Q.ShiftBulb.SetFont(smallerFont)
+		key.Q.ShiftBulb.SetFixedHeight(smallFont.PixelSize() * 4 / 3)
 	}
-
-	labelMu.Lock()
-	label.SetText(strings.TrimSpace(st))
-	labelMu.Unlock()
 }
 
 func PrintHistory() {
